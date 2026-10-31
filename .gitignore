@@ -1,0 +1,18 @@
+.env
+.venv/
+__pycache__/
+*.py[cod]
+*.idx
+*.aux
+*.log
+.vscode/
+
+# Raw and generated meteorological archives
+ascat_data/
+ERA5_data/
+ERA_5_REANALYSİS_Data/
+asos.csv
+
+# Local analysis caches and temporary files
+*.swp
+*.tmp
