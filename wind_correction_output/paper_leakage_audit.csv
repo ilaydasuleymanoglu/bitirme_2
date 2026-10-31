@@ -1,0 +1,6 @@
+fold,train_rows,test_rows,train_max_valid_time,test_min_valid_time,train_before_test,no_time_overlap,initialization_not_after_valid,ascat_available_at_initialization,features_do_not_include_targets,feature_values_finite
+1,97,2,2021-01-27,2021-01-28,True,True,True,True,True,True
+2,99,4,2021-01-28,2021-01-29,True,True,True,True,True,True
+3,103,4,2021-01-29,2021-01-30,True,True,True,True,True,True
+4,107,4,2021-01-30,2021-01-31,True,True,True,True,True,True
+5,111,4,2021-01-31,2021-02-01,True,True,True,True,True,True

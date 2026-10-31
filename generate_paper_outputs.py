@@ -11,6 +11,7 @@ if VENV_PYTHON.exists() and Path(sys.executable) != VENV_PYTHON:
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import xarray as xr
 from matplotlib.backends.backend_pdf import PdfPages
 
 
@@ -24,6 +25,137 @@ def load() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     significance = pd.read_csv(OUT / "paper_significance.csv")
     coverage = pd.read_csv(OUT / "paper_thiessen_coverage.csv")
     return metrics, significance, coverage
+
+
+def load_table() -> pd.DataFrame:
+    return pd.read_csv(OUT / "ltb_thiessen_table.csv", parse_dates=["valid_time"])
+
+
+def save_requested_figures(table: pd.DataFrame) -> list[Path]:
+    paths = []
+    stations = table[["station", "latitude", "longitude"]].drop_duplicates()
+
+    fig, ax = plt.subplots(figsize=(8, 6), constrained_layout=True)
+    ax.scatter(table["longitude"], table["latitude"], s=10, alpha=0.15, color="#457b9d")
+    ax.scatter(stations["longitude"], stations["latitude"], s=55, color="#d62828", label="ASOS/LTB")
+    for _, row in stations.iterrows():
+        ax.annotate(row["station"], (row["longitude"], row["latitude"]), xytext=(3, 3),
+                    textcoords="offset points", fontsize=8)
+    ax.set_title("Türkiye/Akdeniz çalışma alanı ve ASOS/LTB istasyonları")
+    ax.set_xlabel("Boylam (°)")
+    ax.set_ylabel("Enlem (°)")
+    ax.legend()
+    ax.grid(alpha=0.25)
+    path = FIG / "study_area_asos_stations.png"
+    fig.savefig(path, dpi=220)
+    plt.close(fig)
+    paths.append(path)
+
+    ascat_path = ROOT / "ascat_data/01/turkiye_akdeniz_ascat_2021_01.nc"
+    ascat = xr.open_dataset(ascat_path)
+    values = ascat["modulus"].squeeze()
+    first = values.isel(time=0)
+    latitude = values["latitude"].to_numpy()
+    longitude = values["longitude"].to_numpy()
+    grid_lat, grid_lon = np.meshgrid(latitude, longitude, indexing="ij")
+    station_xy = stations[["latitude", "longitude"]].to_numpy()
+    assignment = np.argmin(
+        (grid_lat[..., None] - station_xy[:, 0]) ** 2
+        + (grid_lon[..., None] - station_xy[:, 1]) ** 2,
+        axis=2,
+    )
+    fig, ax = plt.subplots(figsize=(8, 6), constrained_layout=True)
+    mesh = ax.pcolormesh(grid_lon, grid_lat, first.to_numpy(), shading="auto", cmap="viridis")
+    ax.contour(grid_lon, grid_lat, assignment, levels=np.arange(0.5, len(stations)), colors="white", linewidths=0.7)
+    ax.scatter(stations["longitude"], stations["latitude"], s=40, color="#d62828", edgecolor="white")
+    ax.set_title("ASCAT gridi ve istasyonlara göre Thiessen bölgeleri")
+    ax.set_xlabel("Boylam (°)")
+    ax.set_ylabel("Enlem (°)")
+    fig.colorbar(mesh, ax=ax, label="ASCAT rüzgar hızı (m/s)")
+    path = FIG / "ascat_grid_thiessen.png"
+    fig.savefig(path, dpi=220)
+    plt.close(fig)
+    ascat.close()
+    paths.append(path)
+
+    daily = table.groupby("valid_time", as_index=False)[
+        ["tigge_wind_speed", "ascat_thiessen_wind_speed", "ltb_wind_speed", "era5_wind_speed"]
+    ].mean()
+    fig, ax = plt.subplots(figsize=(10, 5), constrained_layout=True)
+    for column, label, color in [
+        ("tigge_wind_speed", "TIGGE", "#264653"),
+        ("ascat_thiessen_wind_speed", "ASCAT Thiessen", "#e9c46a"),
+        ("ltb_wind_speed", "LTB/ASOS", "#d62828"),
+        ("era5_wind_speed", "ERA5", "#2a9d8f"),
+    ]:
+        ax.plot(daily["valid_time"], daily[column], marker="o", label=label, color=color)
+    ax.set_title("TIGGE, ASCAT, LTB/ASOS ve ERA5 zaman serileri")
+    ax.set_ylabel("Ortalama 10 m rüzgar hızı (m/s)")
+    ax.set_xlabel("Geçerlilik zamanı")
+    ax.legend(ncol=2)
+    ax.grid(alpha=0.25)
+    fig.autofmt_xdate()
+    path = FIG / "wind_time_series.png"
+    fig.savefig(path, dpi=220)
+    plt.close(fig)
+    paths.append(path)
+
+    predictions = pd.read_csv(OUT / "paper_rolling_predictions.csv", parse_dates=["valid_time"])
+    baseline = predictions[predictions["model"] == "TIGGE"].copy()
+    corrected = predictions[predictions["model"] == "TIGGE + ASCAT Thiessen XGBoost"].copy()
+    baseline["baseline_error_sq"] = baseline["error"] ** 2
+    corrected["corrected_error_sq"] = corrected["error"] ** 2
+    error_data = baseline[["target", "station", "baseline_error_sq"]].merge(
+        corrected[["target", "station", "corrected_error_sq"]],
+        on=["target", "station"],
+        how="inner",
+    )
+    error_data["rmse_improvement"] = np.sqrt(error_data["baseline_error_sq"]) - np.sqrt(
+        error_data["corrected_error_sq"]
+    )
+    station_improvement = error_data.groupby(["target", "station"], as_index=False)[
+        "rmse_improvement"
+    ].mean()
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5), sharey=True, constrained_layout=True)
+    for ax, target, title in zip(
+        axes,
+        ["ltb_wind_speed", "era5_wind_speed"],
+        ["LTB/ASOS RMSE farkı", "ERA5 RMSE farkı"],
+    ):
+        plot = station_improvement[station_improvement["target"] == target]
+        colors = np.where(plot["rmse_improvement"] >= 0, "#2a9d8f", "#d62828")
+        ax.barh(plot["station"], plot["rmse_improvement"], color=colors)
+        ax.axvline(0, color="black", linewidth=0.8)
+        ax.set_title(title)
+        ax.set_xlabel("Hata azalması (m/s)")
+        ax.grid(axis="x", alpha=0.25)
+    path = FIG / "station_rmse_difference.png"
+    fig.savefig(path, dpi=220)
+    plt.close(fig)
+    paths.append(path)
+
+    fig, axes = plt.subplots(1, 2, figsize=(11, 5), constrained_layout=True)
+    series = [
+        table["tigge_wind_speed"],
+        table["ascat_thiessen_wind_speed"],
+        table["ltb_wind_speed"],
+        table["era5_wind_speed"],
+    ]
+    axes[0].boxplot(series, tick_labels=["TIGGE", "ASCAT", "LTB", "ERA5"], patch_artist=True)
+    axes[0].set_title("10 m rüzgar hız profilleri")
+    axes[0].set_ylabel("Rüzgar hızı (m/s)")
+    axes[0].grid(axis="y", alpha=0.25)
+    axes[1].hist(table["error"], bins=14, alpha=0.75, color="#457b9d", edgecolor="white")
+    axes[1].axvline(0, color="black", linewidth=0.8)
+    axes[1].set_title("ERA5-TIGGE hata dağılımı")
+    axes[1].set_xlabel("Hata (m/s)")
+    axes[1].set_ylabel("Frekans")
+    axes[1].grid(axis="y", alpha=0.25)
+    path = FIG / "wind_profiles_error_distributions.png"
+    fig.savefig(path, dpi=220)
+    plt.close(fig)
+    paths.append(path)
+    return paths
 
 
 def save_figures() -> list[Path]:
@@ -85,6 +217,7 @@ def save_figures() -> list[Path]:
     fig.savefig(path, dpi=220)
     plt.close(fig)
     paths.append(path)
+    paths.extend(save_requested_figures(load_table()))
     return paths
 
 
@@ -101,7 +234,7 @@ def make_pdf(paths: list[Path]) -> None:
                  "gozlemleri ve ERA5 reanalysis karsisinda rolling-origin zaman dogrulamasi ile raporlanir.", fontsize=11, va="top")
         fig.text(0.12, 0.51, "Ana bulgu", fontsize=14, weight="bold")
         fig.text(0.12, 0.47, "LTB hedefinde ortalama RMSE iyilesmesi: 52.07%\\nERA5 hedefinde ortalama RMSE iyilesmesi: 50.04%\\n"
-                 "Diebold-Mariano p-degeri: LTB=0.0077, ERA5=0.0875", fontsize=12, va="top")
+                 "Diebold-Mariano t-testi p-degeri: LTB=0.0163, ERA5=0.1057", fontsize=12, va="top")
         fig.text(0.12, 0.28, "Sinir: Sonuclar Ocak 2021 ve 18 bagimsiz test ornegine dayanan pilot calismadir.", fontsize=11)
         pdf.savefig(fig); plt.close(fig)
 

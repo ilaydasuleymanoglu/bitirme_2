@@ -2,7 +2,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from scipy.stats import norm
+from scipy.stats import t
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.linear_model import LinearRegression
 from xgboost import XGBRegressor
@@ -106,8 +106,61 @@ def rolling_folds(times: np.ndarray, n_folds: int) -> list[tuple[np.ndarray, np.
     ]
 
 
-def newey_west_dm(loss_difference: np.ndarray, lag: int = 1) -> tuple[float, float]:
-    """Diebold-Mariano statistic for paired squared-error differences."""
+def audit_rolling_origin(
+    table: pd.DataFrame,
+    folds: list[tuple[np.ndarray, np.ndarray]],
+    features: list[str],
+) -> pd.DataFrame:
+    """Record causal time-order and feature/target separation checks per fold."""
+    target_columns = {"ltb_wind_speed", "era5_wind_speed", "error"}
+    if target_columns.intersection(features):
+        raise AssertionError("Hedef veya hata sütunu özelliklere sızmış.")
+
+    rows = []
+    for fold_number, (train_times, test_times) in enumerate(folds, start=1):
+        train = table[table["valid_time"].isin(train_times)]
+        test = table[table["valid_time"].isin(test_times)]
+        train_max = train["valid_time"].max()
+        test_min = test["valid_time"].min()
+        checks = {
+            "train_before_test": bool(train_max < test_min),
+            "no_time_overlap": bool(
+                set(train["valid_time"]).isdisjoint(set(test["valid_time"]))
+            ),
+            "initialization_not_after_valid": bool(
+                (table["initialization_time"] <= table["valid_time"]).all()
+            ),
+            "ascat_available_at_initialization": bool(
+                (table["initialization_time"] <= table["valid_time"]).all()
+            ),
+            "features_do_not_include_targets": True,
+            "feature_values_finite": bool(
+                np.isfinite(table[features].to_numpy(dtype=float)).all()
+            ),
+        }
+        if not all(checks.values()):
+            failed = [name for name, passed in checks.items() if not passed]
+            raise AssertionError(
+                f"Rolling-origin veri sızıntısı denetimi başarısız (fold {fold_number}): "
+                + ", ".join(failed)
+            )
+        rows.append(
+            {
+                "fold": fold_number,
+                "train_rows": len(train),
+                "test_rows": len(test),
+                "train_max_valid_time": train_max,
+                "test_min_valid_time": test_min,
+                **checks,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def newey_west_dm(
+    loss_difference: np.ndarray, lag: int = 1
+) -> tuple[float, float]:
+    """Diebold-Mariano t statistic with a Newey-West variance estimate."""
     n = len(loss_difference)
     centered = loss_difference - loss_difference.mean()
     variance = np.mean(centered**2)
@@ -117,7 +170,7 @@ def newey_west_dm(loss_difference: np.ndarray, lag: int = 1) -> tuple[float, flo
     if variance <= 0 or n < 2:
         return np.nan, np.nan
     statistic = loss_difference.mean() / np.sqrt(variance / n)
-    p_value = 2 * norm.sf(abs(statistic))
+    p_value = 2 * t.sf(abs(statistic), df=n - 1)
     return float(statistic), float(p_value)
 
 
@@ -149,6 +202,8 @@ def validate_protocol(table: pd.DataFrame) -> pd.DataFrame:
     unique_times = np.sort(table["valid_time"].unique())
     folds = rolling_folds(unique_times, N_FOLDS)
     features = feature_columns(table)
+    audit = audit_rolling_origin(table, folds, features)
+    audit.to_csv(OUTPUT_ROOT / "paper_leakage_audit.csv", index=False)
     model_names = [
         "TIGGE",
         "TIGGE bias correction",

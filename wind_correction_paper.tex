@@ -41,6 +41,12 @@ Her ASCAT hücresi en yakın istasyonun Voronoi/Thiessen hücresine atanmıştı
 
 \subsection{Model ve doğrulama}
 Ham TIGGE, sabit bias düzeltmesi, lineer regresyon, Random Forest ve XGBoost karşılaştırılmıştır. Zaman sıralaması korunmuş, beş expanding/rolling test katmanı kullanılmıştır. Tahmin başlangıcı ile geçerlilik zamanı için $t_{init}\le t_{valid}$ koşulu kontrol edilmiştir.
+Her katmanda eğitim kümesi yalnızca test kümesinin ilk geçerlilik zamanından
+önceki kayıtlarla oluşturulmuş ve eğitim/test geçerlilik zamanlarının
+kesişmediği otomatik olarak denetlenmiştir. Ayrıca hedef ve hata değişkenlerinin
+özellik listesine alınmadığı, özelliklerin sonlu olduğu ve ASCAT gözleminin
+geçerlilik zamanından sonra gelmediği kontrol edilmiştir. Bu kontrollerin
+katman-bazlı çıktısı \texttt{paper\_leakage\_audit.csv} dosyasında sunulmuştur.
 
 \subsection{İstatistikler}
 \begin{equation}
@@ -50,9 +56,29 @@ MAE=\frac{1}{n}\sum_i|\widehat{U}_i-U_i|
 \begin{equation}
 z_i=\frac{x_i-\bar{x}}{s_x}.
 \end{equation}
-RMSE farkları 2000 tekrarlı paired bootstrap ile yüzde 95 güven aralığında raporlanmış, tahmin hatalarının karesel farkları için lag-1 Newey--West varyanslı Diebold--Mariano testi uygulanmıştır.
+RMSE farkları 2000 tekrarlı paired bootstrap ile yüzde 95 güven aralığında raporlanmış, tahmin hatalarının karesel farkları için lag-1 Newey--West varyanslı Diebold--Mariano t-testi uygulanmıştır. Test istatistiğinin p-değeri, $n-1$ serbestlik dereceli Student t dağılımından iki taraflı olarak hesaplanmıştır.
 
 \section{Sonuçlar}
+Beş katmanlı expanding rolling-origin doğrulamasında toplam 18 istasyon-zaman
+test örneği değerlendirilmiştir. Veri sızıntısı denetiminin tüm katmanlarda
+başarılı olması, her test katmanının yalnızca geçmiş geçerlilik zamanlarından
+öğrenildiğini göstermiştir. Buna rağmen örneklem Ocak 2021 ile sınırlı
+olduğundan sonuçlar pilot niteliktedir.
+
+LTB/ASOS hedefinde ham TIGGE tahmininin RMSE değeri 2.988 m/s iken
+ASCAT--Thiessen--XGBoost düzeltmesiyle 1.432 m/s'ye düşmüştür; bu, 1.498 m/s
+mutlak ve yüzde 52.07 göreli iyileşmeye karşılık gelmektedir. ERA5 hedefinde
+RMSE 2.386 m/s'den 1.192 m/s'ye gerilemiş, iyileşme 1.174 m/s ve yüzde
+50.04 olmuştur. LTB hedefindeki iyileşme paired bootstrap ile elde edilen
+0.793--2.158 m/s yüzde 95 güven aralığı ve DM t-testi ($p=0.0163$) ile
+desteklenmiştir. ERA5 hedefindeki bootstrap aralığı 0.325--1.966 m/s
+olmasına karşın DM t-testi sonucu $p=0.1057$ olduğundan yüzde 5 anlamlılık düzeyine
+ulaşmamıştır; dolayısıyla ERA5 sonucu yüzde 10 düzeyinde de istatistiksel
+olarak anlamlı değildir. LTB sonucu ise hem yüzde 5 hem yüzde 10 düzeyinde
+anlamlıdır. Dolayısıyla düzeltme her iki hedefte de hata büyüklüğünü
+azaltmış, ancak ERA5 için istatistiksel kanıt pilot örneklemin sınırları
+içinde kesinleşmemiştir.
+
 \begin{table}[H]\centering
 \caption{Rolling-origin doğrulama sonuçları.}\label{tab:metrics}
 \begin{tabular}{llrrrr}
@@ -77,14 +103,13 @@ ERA5 & ASCAT+XGBoost & 0.978 & 1.192 & -3.290 & 18\\
 \includegraphics[width=.85\linewidth]{wind_correction_output/figures/thiessen_coverage.png}
 \caption{Thiessen-ağırlıklı ASCAT geçerli veri kapsamı.}\end{figure}
 
-\section{Kullanıcı görselleri}
-Bu beş alan daha sonra bölge haritası, istasyon dağılımı, rüzgar profili, hata haritası ve zaman serisi görselleriyle doldurulabilir.
-\begin{figure}[H]\centering\framebox{\parbox{.9\linewidth}{\vspace{3cm}\centering Kullanıcı Görseli 1 için yer\vspace{3cm}}}\caption{Kullanıcı görseli 1.}\end{figure}
-\begin{figure}[H]\centering\framebox{\parbox{.9\linewidth}{\vspace{3cm}\centering Kullanıcı Görseli 2 için yer\vspace{3cm}}}\caption{Kullanıcı görseli 2.}\end{figure}
-\begin{figure}[H]\centering\framebox{\parbox{.9\linewidth}{\vspace{3cm}\centering Kullanıcı Görseli 3 için yer\vspace{3cm}}}\caption{Kullanıcı görseli 3.}\end{figure}
-\begin{figure}[H]\centering\framebox{\parbox{.9\linewidth}{\vspace{3cm}\centering Kullanıcı Görseli 4 için yer\vspace{3cm}}}\caption{Kullanıcı görseli 4.}\end{figure}
-\begin{figure}[H]\centering\framebox{\parbox{.9\linewidth}{\vspace{3cm}\centering Kullanıcı Görseli 5 için yer\vspace{3cm}}}\caption{Kullanıcı görseli 5.}\end{figure}
+\section{Çalışma alanı ve tanılayıcı görseller}
+\begin{figure}[H]\centering\includegraphics[width=.85\linewidth]{wind_correction_output/figures/study_area_asos_stations.png}\caption{Türkiye/Akdeniz çalışma alanı ve ASOS/LTB istasyonları.}\end{figure}
+\begin{figure}[H]\centering\includegraphics[width=.85\linewidth]{wind_correction_output/figures/ascat_grid_thiessen.png}\caption{ASCAT grid hücreleri ve Thiessen bölgeleri.}\end{figure}
+\begin{figure}[H]\centering\includegraphics[width=.95\linewidth]{wind_correction_output/figures/wind_time_series.png}\caption{TIGGE, ASCAT, LTB/ASOS ve ERA5 10 m rüzgar hızlarının zaman serileri.}\end{figure}
+\begin{figure}[H]\centering\includegraphics[width=.95\linewidth]{wind_correction_output/figures/station_rmse_difference.png}\caption{İstasyon bazlı RMSE hata azalması. Pozitif değer düzeltme lehine iyileşmeyi gösterir.}\end{figure}
+\begin{figure}[H]\centering\includegraphics[width=.95\linewidth]{wind_correction_output/figures/wind_profiles_error_distributions.png}\caption{Mevcut 10 m rüzgar hızlarının dağılımı ve ERA5--TIGGE hata dağılımı. Veri setinde farklı düşey seviyeler bulunmadığından görsel 10 m hız profillerini göstermektedir.}\end{figure}
 
 \section{Sınırlılıklar}
-Bu sonuçlar Ocak 2021 döneminde 18 bağımsız test örneğine dayanan pilot bulgulardır. LTB hedefinde DM testi $p=0.0077$, ERA5 hedefinde $p=0.0875$ bulunmuştur. ERA5 sonucu klasik yüzde 5 seviyesinde anlamlı değildir. Mevsimsel ve yıllararası genelleme için daha uzun TIGGE dönemleri gereklidir. LTBH istasyonunda geçerli Thiessen ASCAT değeri bulunmadığı için bu istasyon model tablosuna dahil edilmemiştir.
+Bu sonuçlar Ocak 2021 döneminde 18 bağımsız test örneğine dayanan pilot bulgulardır. LTB hedefinde DM t-testi $p=0.0163$, ERA5 hedefinde $p=0.1057$ bulunmuştur. ERA5 sonucu klasik yüzde 5 seviyesinde anlamlı değildir. Mevsimsel ve yıllararası genelleme için daha uzun TIGGE dönemleri gereklidir. LTBH istasyonunda geçerli Thiessen ASCAT değeri bulunmadığı için bu istasyon model tablosuna dahil edilmemiştir.
 \end{document}
