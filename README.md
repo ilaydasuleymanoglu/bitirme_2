@@ -116,6 +116,11 @@ Veri setinde farklı düşey seviyeler bulunmadığı için beşinci görsel ger
 düşey rüzgar profili yerine mevcut 10 m rüzgar hızlarının dağılımını ve
 ERA5--TIGGE hata dağılımını göstermektedir.
 
+LTB bölgesi için ayrıca en uzun kesintisiz seriye sahip `LTBS` istasyonunda
+TIGGE ham tahmini, ASCAT--XGBoost düzeltilmiş tahmini, gerçekleşen LTB
+gözlemleri ve ERA5 reanalizi aynı zaman ekseninde ve saçılım grafikleriyle
+karşılaştırılmıştır: [LTBS zaman serisi ve saçılım grafikleri](./wind_correction_output/figures/ltbs_timeseries_scatter.png).
+
 ## Yeniden üretim
 
 ```bash
