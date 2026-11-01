@@ -31,6 +31,72 @@ def load_table() -> pd.DataFrame:
     return pd.read_csv(OUT / "ltb_thiessen_table.csv", parse_dates=["valid_time"])
 
 
+def save_ltb_diagnostics(table: pd.DataFrame) -> list[Path]:
+    predictions = pd.read_csv(
+        OUT / "paper_rolling_predictions.csv", parse_dates=["valid_time"]
+    )
+    ltb_predictions = predictions[predictions["target"] == "ltb_wind_speed"]
+    corrected = ltb_predictions[
+        ltb_predictions["model"] == "TIGGE + ASCAT Thiessen XGBoost"
+    ][["valid_time", "station", "predicted"]].rename(
+        columns={"predicted": "corrected_wind_speed"}
+    )
+    plot_table = table.merge(corrected, on=["valid_time", "station"], how="left")
+    stations = sorted(plot_table["station"].unique())
+    paths = []
+
+    fig, axes = plt.subplots(
+        len(stations), 1, figsize=(11, max(3.2 * len(stations), 6)),
+        sharex=True, constrained_layout=True
+    )
+    axes = np.atleast_1d(axes)
+    for ax, station in zip(axes, stations):
+        data = plot_table[plot_table["station"] == station].sort_values("valid_time")
+        ax.plot(data["valid_time"], data["ltb_wind_speed"], "o-", label="Gerçek LTB", color="#d62828")
+        ax.plot(data["valid_time"], data["tigge_wind_speed"], "o--", label="TIGGE", color="#264653")
+        ax.plot(data["valid_time"], data["era5_wind_speed"], "o-", label="ERA5", color="#2a9d8f")
+        corrected_data = data.dropna(subset=["corrected_wind_speed"])
+        ax.plot(
+            corrected_data["valid_time"], corrected_data["corrected_wind_speed"],
+            "s-", label="ASCAT-XGBoost düzeltmesi", color="#f4a261", linewidth=2
+        )
+        ax.set_ylabel(f"{station}\n(m/s)")
+        ax.grid(alpha=0.25)
+    axes[0].legend(ncol=4, loc="upper right")
+    axes[-1].set_xlabel("Geçerlilik zamanı")
+    fig.suptitle("LTB istasyonlarında TIGGE, ASCAT-XGBoost, LTB ve ERA5 zaman serileri")
+    fig.autofmt_xdate()
+    path = FIG / "ltb_forecast_timeseries.png"
+    fig.savefig(path, dpi=220)
+    plt.close(fig)
+    paths.append(path)
+
+    fig, axes = plt.subplots(1, 3, figsize=(15, 5), constrained_layout=True)
+    scatter_specs = [
+        ("tigge_wind_speed", "TIGGE", "#264653"),
+        ("corrected_wind_speed", "ASCAT-XGBoost", "#f4a261"),
+        ("era5_wind_speed", "ERA5", "#2a9d8f"),
+    ]
+    for ax, (column, label, color) in zip(axes, scatter_specs):
+        data = plot_table.dropna(subset=["ltb_wind_speed", column])
+        ax.scatter(data["ltb_wind_speed"], data[column], c=color, alpha=0.8, edgecolors="white")
+        low = min(data["ltb_wind_speed"].min(), data[column].min())
+        high = max(data["ltb_wind_speed"].max(), data[column].max())
+        ax.plot([low, high], [low, high], "k--", linewidth=1, label="1:1")
+        correlation = data["ltb_wind_speed"].corr(data[column])
+        ax.set_title(f"{label}\nr = {correlation:.2f}")
+        ax.set_xlabel("Gerçek LTB (m/s)")
+        ax.set_ylabel(f"{label} (m/s)")
+        ax.grid(alpha=0.25)
+        ax.legend()
+    fig.suptitle("LTB gerçekleşen değerine karşı tahminlerin noktasal saçılımı")
+    path = FIG / "ltb_forecast_scatter.png"
+    fig.savefig(path, dpi=220)
+    plt.close(fig)
+    paths.append(path)
+    return paths
+
+
 def save_requested_figures(table: pd.DataFrame) -> list[Path]:
     paths = []
     stations = table[["station", "latitude", "longitude"]].drop_duplicates()
@@ -158,68 +224,6 @@ def save_requested_figures(table: pd.DataFrame) -> list[Path]:
     return paths
 
 
-def save_ltb_timeseries_scatter() -> Path:
-    predictions = pd.read_csv(
-        OUT / "paper_rolling_predictions.csv",
-        parse_dates=["valid_time"],
-    )
-    station = "LTBS"
-    station_data = predictions[
-        (predictions["station"] == station)
-        & (predictions["target"] == "ltb_wind_speed")
-    ]
-    actual = station_data[station_data["model"] == "TIGGE"][
-        ["valid_time", "actual"]
-    ].rename(columns={"actual": "ltb_actual"})
-    era5 = predictions[
-        (predictions["station"] == station)
-        & (predictions["target"] == "era5_wind_speed")
-        & (predictions["model"] == "TIGGE")
-    ][["valid_time", "actual"]].rename(columns={"actual": "era5_actual"})
-    tigge = station_data[station_data["model"] == "TIGGE"][
-        ["valid_time", "predicted"]
-    ].rename(columns={"predicted": "tigge"})
-    corrected = station_data[
-        station_data["model"] == "TIGGE + ASCAT Thiessen XGBoost"
-    ][["valid_time", "predicted"]].rename(columns={"predicted": "corrected"})
-    series = actual.merge(era5, on="valid_time").merge(tigge, on="valid_time").merge(
-        corrected, on="valid_time"
-    ).sort_values("valid_time")
-
-    fig, axes = plt.subplots(2, 2, figsize=(12, 8), constrained_layout=True)
-    axes[0, 0].plot(series["valid_time"], series["tigge"], marker="o", label="TIGGE", color="#264653")
-    axes[0, 0].plot(series["valid_time"], series["corrected"], marker="o", label="ASCAT + XGBoost", color="#e9c46a")
-    axes[0, 0].plot(series["valid_time"], series["ltb_actual"], marker="o", label="LTB gerçekleşen", color="#d62828")
-    axes[0, 0].plot(series["valid_time"], series["era5_actual"], marker="o", label="ERA5", color="#2a9d8f")
-    axes[0, 0].set_title("LTBS zaman serisi")
-    axes[0, 0].set_ylabel("Rüzgar hızı (m/s)")
-    axes[0, 0].legend(fontsize=8)
-    axes[0, 0].grid(alpha=0.25)
-    axes[0, 0].tick_params(axis="x", rotation=35)
-
-    for ax, column, label, color in [
-        (axes[0, 1], "tigge", "TIGGE", "#264653"),
-        (axes[1, 0], "corrected", "ASCAT + XGBoost", "#e9c46a"),
-        (axes[1, 1], "era5_actual", "ERA5", "#2a9d8f"),
-    ]:
-        ax.scatter(series["ltb_actual"], series[column], color=color, alpha=0.8, edgecolor="white")
-        bounds = np.array([
-            min(series["ltb_actual"].min(), series[column].min()),
-            max(series["ltb_actual"].max(), series[column].max()),
-        ])
-        ax.plot(bounds, bounds, "--", color="#555555", linewidth=1)
-        ax.set_title(f"LTB gerçekleşen - {label}")
-        ax.set_xlabel("LTB gerçekleşen (m/s)")
-        ax.set_ylabel(f"{label} (m/s)")
-        ax.grid(alpha=0.25)
-
-    fig.suptitle("LTBS: tahminler, gerçekleşen LTB ve ERA5 karşılaştırması", fontsize=14)
-    path = FIG / "ltbs_timeseries_scatter.png"
-    fig.savefig(path, dpi=220)
-    plt.close(fig)
-    return path
-
-
 def save_figures() -> list[Path]:
     metrics, significance, coverage = load()
     paths = []
@@ -280,7 +284,7 @@ def save_figures() -> list[Path]:
     plt.close(fig)
     paths.append(path)
     paths.extend(save_requested_figures(load_table()))
-    paths.append(save_ltb_timeseries_scatter())
+    paths.extend(save_ltb_diagnostics(load_table()))
     return paths
 
 

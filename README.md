@@ -111,15 +111,16 @@ LaTeX dosyasındaki beş placeholder gerçek veri çıktılarıyla değiştirilm
 3. [TIGGE, ASCAT, LTB ve ERA5 zaman serileri](./wind_correction_output/figures/wind_time_series.png)
 4. [İstasyon bazlı RMSE farkları](./wind_correction_output/figures/station_rmse_difference.png)
 5. [10 m rüzgar hızları ve hata dağılımları](./wind_correction_output/figures/wind_profiles_error_distributions.png)
+6. [LTB tahmin ve gerçekleşen değer zaman serileri](./wind_correction_output/figures/ltb_forecast_timeseries.png)
+7. [LTB tahminlerinin noktasal saçılımı](./wind_correction_output/figures/ltb_forecast_scatter.png)
 
 Veri setinde farklı düşey seviyeler bulunmadığı için beşinci görsel gerçek bir
 düşey rüzgar profili yerine mevcut 10 m rüzgar hızlarının dağılımını ve
 ERA5--TIGGE hata dağılımını göstermektedir.
 
-LTB bölgesi için ayrıca en uzun kesintisiz seriye sahip `LTBS` istasyonunda
-TIGGE ham tahmini, ASCAT--XGBoost düzeltilmiş tahmini, gerçekleşen LTB
-gözlemleri ve ERA5 reanalizi aynı zaman ekseninde ve saçılım grafikleriyle
-karşılaştırılmıştır: [LTBS zaman serisi ve saçılım grafikleri](./wind_correction_output/figures/ltbs_timeseries_scatter.png).
+LTB tanılayıcı grafiklerinde ASCAT--XGBoost düzeltilmiş tahminleri yalnızca
+rolling-origin dış örnek test zamanlarında gösterilir. Böylece eğitim
+zamanlarına ait başarı ölçümleri görsel olarak test sonuçlarıyla karıştırılmaz.
 
 ## Yeniden üretim
 
