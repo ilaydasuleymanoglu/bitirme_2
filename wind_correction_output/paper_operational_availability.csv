@@ -1,0 +1,2 @@
+product,operational_latency_verified,status,reason,required_evidence
+ASCAT,False,not_verified,Arşiv NetCDF zaman damgaları ürünün operasyonel yayın gecikmesini göstermemektedir.,Ürün dokümantasyonu veya gerçek zamanlı erişim loglarında yayın ve erişim zamanlarının karşılaştırılması.

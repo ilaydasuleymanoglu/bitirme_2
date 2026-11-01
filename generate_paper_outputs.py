@@ -229,6 +229,7 @@ def save_figures() -> list[Path]:
     paths = []
     labels = {
         "TIGGE": "TIGGE",
+        "Persistence": "Persistence",
         "TIGGE bias correction": "Bias correction",
         "TIGGE + linear regression": "Linear regression",
         "TIGGE + random forest": "Random forest",
@@ -246,7 +247,7 @@ def save_figures() -> list[Path]:
         data = data.sort_values("rmse")
         ax.barh(data.label, data.rmse, color=["#2a9d8f" if "ASCAT" in x else "#8d99ae" for x in data.model])
         ax.set_title(title)
-        ax.set_xlabel("Mean RMSE (m/s)")
+        ax.set_xlabel("Pooled out-of-sample RMSE (m/s)")
         ax.grid(axis="x", alpha=0.25)
     fig.suptitle("Rolling-origin validation: model comparison")
     path = FIG / "model_rmse_comparison.png"
@@ -290,6 +291,19 @@ def save_figures() -> list[Path]:
 
 def make_pdf(paths: list[Path]) -> None:
     metrics, significance, coverage = load()
+    ltb_sig = significance.loc[significance["target"] == "ltb_wind_speed"].iloc[0]
+    era5_sig = significance.loc[significance["target"] == "era5_wind_speed"].iloc[0]
+    ltb_metrics = metrics[
+        (metrics["target"] == "ltb_wind_speed")
+        & (metrics["model"].isin(["TIGGE", "TIGGE + ASCAT Thiessen XGBoost"]))
+    ].set_index("model")["rmse"]
+    era5_metrics = metrics[
+        (metrics["target"] == "era5_wind_speed")
+        & (metrics["model"].isin(["TIGGE", "TIGGE + ASCAT Thiessen XGBoost"]))
+    ].set_index("model")["rmse"]
+    ltb_improvement = 100 * (ltb_metrics["TIGGE"] - ltb_metrics["TIGGE + ASCAT Thiessen XGBoost"]) / ltb_metrics["TIGGE"]
+    era5_improvement = 100 * (era5_metrics["TIGGE"] - era5_metrics["TIGGE + ASCAT Thiessen XGBoost"]) / era5_metrics["TIGGE"]
+    origins = int(ltb_sig["paired_samples"])
     pdf_path = OUT / "wind_correction_paper.pdf"
     with PdfPages(pdf_path) as pdf:
         fig = plt.figure(figsize=(8.27, 11.69))
@@ -300,9 +314,10 @@ def make_pdf(paths: list[Path]) -> None:
                  "ASCAT grid hucreleri Thiessen/Voronoi bolgeleriyle istasyonlara aktarilir. Sonuclar LTB/ASOS\\n"
                  "gozlemleri ve ERA5 reanalysis karsisinda rolling-origin zaman dogrulamasi ile raporlanir.", fontsize=11, va="top")
         fig.text(0.12, 0.51, "Ana bulgu", fontsize=14, weight="bold")
-        fig.text(0.12, 0.47, "LTB hedefinde ortalama RMSE iyilesmesi: 52.07%\\nERA5 hedefinde ortalama RMSE iyilesmesi: 50.04%\\n"
-                 "Diebold-Mariano t-testi p-degeri: LTB=0.0163, ERA5=0.1057", fontsize=12, va="top")
-        fig.text(0.12, 0.28, "Sinir: Sonuclar Ocak 2021 ve 18 bagimsiz test ornegine dayanan pilot calismadir.", fontsize=11)
+        fig.text(0.12, 0.47, f"LTB hedefinde RMSE azalmasi: {ltb_improvement:.2f}%\\n"
+                 f"ERA5 hedefinde RMSE azalmasi: {era5_improvement:.2f}%\\n"
+                 f"Kumelenmis DM z-testi p-degeri: LTB={ltb_sig['dm_p_value']:.4f}, ERA5={era5_sig['dm_p_value']:.4f}", fontsize=12, va="top")
+        fig.text(0.12, 0.28, f"Sinir: Sonuclar Ocak-Nisan 2021 ve {origins} forecast origin kumesine dayanan pilot calismadir.", fontsize=11)
         pdf.savefig(fig); plt.close(fig)
 
         for path in paths:
@@ -321,6 +336,30 @@ def make_pdf(paths: list[Path]) -> None:
         table["model"] = table.model.str.replace("TIGGE + ", "", regex=False)
         table = table[["target", "model", "samples", "mae", "rmse", "r2"]].round(3)
         ax.table(cellText=table.values, colLabels=table.columns, loc="upper left", bbox=[0.02, 0.42, 0.96, 0.48])
+        balanced_path = OUT / "paper_station_balanced_metrics.csv"
+        if balanced_path.exists():
+            balanced = pd.read_csv(balanced_path)
+            balanced = balanced[
+                balanced["model"].isin(
+                    ["TIGGE", "TIGGE + ASCAT Thiessen XGBoost"]
+                )
+            ].copy()
+            balanced["target"] = balanced["target"].map(
+                {"ltb_wind_speed": "LTB", "era5_wind_speed": "ERA5"}
+            )
+            balanced["model"] = balanced["model"].str.replace(
+                "TIGGE + ", "", regex=False
+            )
+            balanced = balanced[
+                ["target", "model", "equal_station_mae", "equal_station_rmse"]
+            ].round(3)
+            ax.text(0.02, 0.39, "İstasyon-eşitlikli metrikler", fontsize=14, weight="bold")
+            ax.table(
+                cellText=balanced.values,
+                colLabels=balanced.columns,
+                loc="upper left",
+                bbox=[0.02, 0.20, 0.96, 0.16],
+            )
         ax.text(0.02, 0.34, "Formulasyonlar", fontsize=14, weight="bold")
         ax.text(0.02, 0.29, r"$U = \sqrt{u_{10}^{2}+v_{10}^{2}}$", fontsize=13)
         ax.text(0.02, 0.24, r"$e_t = U^{ERA5}_t - U^{TIGGE}_t$", fontsize=13)

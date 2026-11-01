@@ -2,7 +2,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from scipy.stats import t
+from scipy.stats import norm
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.linear_model import LinearRegression
 from xgboost import XGBRegressor
@@ -22,7 +22,6 @@ from evaluate_ltb_thiessen import (
 ROOT = Path(__file__).resolve().parent
 SEED = 42
 N_BOOTSTRAP = 2000
-N_FOLDS = 5
 
 
 def feature_columns(table: pd.DataFrame) -> list[str]:
@@ -46,11 +45,15 @@ def fit_predict(
     train: pd.DataFrame,
     test: pd.DataFrame,
     features: list[str],
+    target: str,
 ) -> np.ndarray:
+    error_column = f"{target.removesuffix('_wind_speed')}_error"
     if model_name == "TIGGE":
         return test["tigge_wind_speed"].to_numpy()
+    if model_name == "Persistence":
+        return test["persistence_wind_speed"].to_numpy()
     if model_name == "TIGGE bias correction":
-        return test["tigge_wind_speed"].to_numpy() + train["error"].mean()
+        return test["tigge_wind_speed"].to_numpy() + train[error_column].mean()
 
     if model_name == "TIGGE + linear regression":
         model = LinearRegression()
@@ -62,20 +65,40 @@ def fit_predict(
             n_jobs=2,
         )
     elif model_name == "TIGGE + ASCAT Thiessen XGBoost":
+        unique_train_times = np.sort(train["valid_time"].unique())
+        candidates = [
+            {"max_depth": 3, "learning_rate": 0.03, "min_child_weight": 3},
+            {"max_depth": 5, "learning_rate": 0.04, "min_child_weight": 1},
+            {"max_depth": 4, "learning_rate": 0.06, "min_child_weight": 5},
+        ]
+        if len(unique_train_times) >= 10:
+            split = max(1, int(len(unique_train_times) * 0.8))
+            inner_train = train[train["valid_time"] < unique_train_times[split]]
+            inner_valid = train[train["valid_time"] >= unique_train_times[split]]
+            scores = []
+            for params in candidates:
+                candidate = XGBRegressor(
+                    n_estimators=300, subsample=0.8, colsample_bytree=0.8,
+                    objective="reg:squarederror", random_state=SEED, n_jobs=2,
+                    **params,
+                )
+                candidate.fit(inner_train[features], inner_train[error_column])
+                residual = candidate.predict(inner_valid[features]) - inner_valid[
+                    error_column
+                ].to_numpy()
+                scores.append((float(np.mean(residual**2)), params))
+            selected = min(scores, key=lambda item: item[0])[1]
+        else:
+            selected = candidates[1]
         model = XGBRegressor(
-            n_estimators=300,
-            max_depth=5,
-            learning_rate=0.04,
-            subsample=0.8,
-            colsample_bytree=0.8,
-            objective="reg:squarederror",
-            random_state=SEED,
-            n_jobs=2,
+            n_estimators=300, subsample=0.8, colsample_bytree=0.8,
+            objective="reg:squarederror", random_state=SEED, n_jobs=2,
+            **selected,
         )
     else:
         raise ValueError(f"Unknown model: {model_name}")
 
-    model.fit(train[features], train["error"])
+    model.fit(train[features], train[error_column])
     return test["tigge_wind_speed"].to_numpy() + model.predict(test[features])
 
 
@@ -93,16 +116,14 @@ def score(actual: np.ndarray, predicted: np.ndarray) -> dict[str, float]:
     }
 
 
-def rolling_folds(times: np.ndarray, n_folds: int) -> list[tuple[np.ndarray, np.ndarray]]:
-    if len(times) < n_folds + 2:
+def rolling_folds(times: np.ndarray) -> list[tuple[np.ndarray, np.ndarray]]:
+    if len(times) < 2:
         raise RuntimeError(
-            f"Rolling test için en az {n_folds + 2} zaman gerekir; {len(times)} bulundu."
+            f"Rolling test için en az 2 zaman gerekir; {len(times)} bulundu."
         )
-    test_times = np.array_split(times[-n_folds:], n_folds)
     return [
-        (times[times < test[0]], test)
-        for test in test_times
-        if np.any(times < test[0])
+        (times[:index], times[index : index + 1])
+        for index in range(1, len(times))
     ]
 
 
@@ -112,7 +133,10 @@ def audit_rolling_origin(
     features: list[str],
 ) -> pd.DataFrame:
     """Record causal time-order and feature/target separation checks per fold."""
-    target_columns = {"ltb_wind_speed", "era5_wind_speed", "error"}
+    target_columns = {
+        "ltb_wind_speed", "era5_wind_speed", "ltb_error", "era5_error",
+        "ltb_observed_error", "error"
+    }
     if target_columns.intersection(features):
         raise AssertionError("Hedef veya hata sütunu özelliklere sızmış.")
 
@@ -130,7 +154,7 @@ def audit_rolling_origin(
             "initialization_not_after_valid": bool(
                 (table["initialization_time"] <= table["valid_time"]).all()
             ),
-            "ascat_available_at_initialization": bool(
+            "ascat_timestamp_not_after_valid": bool(
                 (table["initialization_time"] <= table["valid_time"]).all()
             ),
             "features_do_not_include_targets": True,
@@ -160,7 +184,7 @@ def audit_rolling_origin(
 def newey_west_dm(
     loss_difference: np.ndarray, lag: int = 1
 ) -> tuple[float, float]:
-    """Diebold-Mariano t statistic with a Newey-West variance estimate."""
+    """Diebold-Mariano asymptotic z statistic with Newey-West variance."""
     n = len(loss_difference)
     centered = loss_difference - loss_difference.mean()
     variance = np.mean(centered**2)
@@ -170,19 +194,27 @@ def newey_west_dm(
     if variance <= 0 or n < 2:
         return np.nan, np.nan
     statistic = loss_difference.mean() / np.sqrt(variance / n)
-    p_value = 2 * t.sf(abs(statistic), df=n - 1)
+    p_value = 2 * norm.sf(abs(statistic))
     return float(statistic), float(p_value)
 
 
-def bootstrap_rmse_difference(
-    baseline_error: np.ndarray,
-    corrected_error: np.ndarray,
+def block_bootstrap_rmse_difference(
+    baseline_mse: np.ndarray,
+    corrected_mse: np.ndarray,
+    block_length: int = 7,
 ) -> tuple[float, float, float]:
+    """Bootstrap origin-level losses while preserving short-term dependence."""
     rng = np.random.default_rng(SEED)
-    paired = np.column_stack((baseline_error, corrected_error))
-    draws = rng.integers(0, len(paired), size=(N_BOOTSTRAP, len(paired)))
-    baseline_rmse = np.sqrt(np.mean(paired[draws, 0] ** 2, axis=1))
-    corrected_rmse = np.sqrt(np.mean(paired[draws, 1] ** 2, axis=1))
+    n = len(baseline_mse)
+    if n != len(corrected_mse) or n < 2:
+        return np.nan, np.nan, np.nan
+    block_length = min(block_length, n)
+    starts = rng.integers(0, n, size=(N_BOOTSTRAP, int(np.ceil(n / block_length))))
+    offsets = np.arange(block_length)
+    indices = (starts[..., None] + offsets) % n
+    indices = indices.reshape(N_BOOTSTRAP, -1)[:, :n]
+    baseline_rmse = np.sqrt(np.mean(baseline_mse[indices], axis=1))
+    corrected_rmse = np.sqrt(np.mean(corrected_mse[indices], axis=1))
     improvement = baseline_rmse - corrected_rmse
     return (
         float(np.mean(improvement)),
@@ -195,17 +227,27 @@ def validate_protocol(table: pd.DataFrame) -> pd.DataFrame:
     table = table.copy()
     table["initialization_time"] = pd.to_datetime(table["initialization_time"])
     table["valid_time"] = pd.to_datetime(table["valid_time"])
+    table = table.sort_values(["station", "valid_time"]).copy()
+    table["persistence_wind_speed"] = table.groupby("station")[
+        "ltb_wind_speed"
+    ].shift(1)
+    table["persistence_wind_speed"] = table["persistence_wind_speed"].fillna(
+        table["tigge_wind_speed"]
+    )
     if (table["initialization_time"] > table["valid_time"]).any():
         raise AssertionError("Başlangıç zamanı, geçerlilik zamanından sonra olamaz.")
     if (table["ascat_thiessen_wind_speed"].isna()).any():
         raise AssertionError("Eksik ASCAT değeri analiz tablosunda tutulmuş.")
+    if table[["ltb_error", "era5_error"]].isna().any().any():
+        raise AssertionError("Hedefe özgü hata sütunlarında eksik değer var.")
     unique_times = np.sort(table["valid_time"].unique())
-    folds = rolling_folds(unique_times, N_FOLDS)
+    folds = rolling_folds(unique_times)
     features = feature_columns(table)
     audit = audit_rolling_origin(table, folds, features)
     audit.to_csv(OUTPUT_ROOT / "paper_leakage_audit.csv", index=False)
     model_names = [
         "TIGGE",
+        "Persistence",
         "TIGGE bias correction",
         "TIGGE + linear regression",
         "TIGGE + random forest",
@@ -220,7 +262,7 @@ def validate_protocol(table: pd.DataFrame) -> pd.DataFrame:
         for target in ["ltb_wind_speed", "era5_wind_speed"]:
             actual = test[target].to_numpy()
             for model_name in model_names:
-                predicted = fit_predict(model_name, train, test, features)
+                predicted = fit_predict(model_name, train, test, features, target)
                 metrics = score(actual, predicted)
                 rows.append(
                     {
@@ -237,6 +279,9 @@ def validate_protocol(table: pd.DataFrame) -> pd.DataFrame:
                             "target": target,
                             "valid_time": test["valid_time"].to_numpy(),
                             "station": test["station"].to_numpy(),
+                            "observation_source": test[
+                                "ltb_observation_source"
+                            ].to_numpy(),
                             "model": model_name,
                             "actual": actual,
                             "predicted": predicted,
@@ -247,21 +292,63 @@ def validate_protocol(table: pd.DataFrame) -> pd.DataFrame:
 
     prediction_table = pd.concat(predictions, ignore_index=True)
     rows_df = pd.DataFrame(rows)
-    summary = (
-        rows_df.groupby(["target", "model"], as_index=False)
-        .agg(
-            folds=("fold", "nunique"),
-            samples=("samples", "sum"),
-            mae=("mae", "mean"),
-            rmse=("rmse", "mean"),
-            r2=("r2", "mean"),
-            bias=("bias", "mean"),
+    summary_rows = []
+    for (target, model), data in prediction_table.groupby(["target", "model"]):
+        error = data["error"].to_numpy()
+        actual = data["actual"].to_numpy()
+        variance = np.sum((actual - actual.mean()) ** 2)
+        summary_rows.append(
+            {
+                "target": target,
+                "model": model,
+                "folds": data["fold"].nunique(),
+                "samples": len(data),
+                "mae": float(np.mean(np.abs(error))),
+                "rmse": float(np.sqrt(np.mean(error**2))),
+                "r2": float(1 - np.sum(error**2) / variance)
+                if variance > 0
+                else np.nan,
+                "bias": float(np.mean(error)),
+                "era5_fallback_rows": int(
+                    (data["observation_source"] == "ERA5 fallback").sum()
+                )
+                if target == "ltb_wind_speed"
+                else 0,
+            }
         )
-    )
+    summary = pd.DataFrame(summary_rows)
     summary.to_csv(OUTPUT_ROOT / "paper_rolling_metrics.csv", index=False)
     rows_df.to_csv(OUTPUT_ROOT / "paper_rolling_fold_metrics.csv", index=False)
     prediction_table.to_csv(
         OUTPUT_ROOT / "paper_rolling_predictions.csv", index=False
+    )
+    balanced_rows = []
+    for (target, model), data in prediction_table.groupby(["target", "model"]):
+        station_scores = data.groupby("station").apply(
+            lambda group: pd.Series(
+                {
+                    "mae": np.mean(np.abs(group["error"])),
+                    "rmse": np.sqrt(np.mean(group["error"] ** 2)),
+                    "bias": np.mean(group["error"]),
+                    "samples": len(group),
+                }
+            ),
+            include_groups=False,
+        )
+        balanced_rows.append(
+            {
+                "target": target,
+                "model": model,
+                "stations": len(station_scores),
+                "equal_station_mae": station_scores["mae"].mean(),
+                "equal_station_rmse": station_scores["rmse"].mean(),
+                "equal_station_bias": station_scores["bias"].mean(),
+                "min_station_samples": int(station_scores["samples"].min()),
+                "max_station_samples": int(station_scores["samples"].max()),
+            }
+        )
+    pd.DataFrame(balanced_rows).to_csv(
+        OUTPUT_ROOT / "paper_station_balanced_metrics.csv", index=False
     )
 
     significance_rows = []
@@ -279,14 +366,39 @@ def validate_protocol(table: pd.DataFrame) -> pd.DataFrame:
             corrected[["fold", "valid_time", "station"]].to_numpy(),
         ):
             raise AssertionError("Baseline ve düzeltilmiş tahminler eşleşmiyor.")
-        baseline_error = baseline["error"].to_numpy()
-        corrected_error = corrected["error"].to_numpy()
-        mean_diff, lower, upper = bootstrap_rmse_difference(
-            baseline_error, corrected_error
+        paired = baseline[["valid_time", "station", "error"]].rename(
+            columns={"error": "baseline_error"}
+        ).merge(
+            corrected[["valid_time", "station", "error"]].rename(
+                columns={"error": "corrected_error"}
+            ),
+            on=["valid_time", "station"],
+            how="inner",
         )
-        dm_stat, dm_p = newey_west_dm(
-            baseline_error**2 - corrected_error**2
+        # Stations sharing a forecast origin are one temporal cluster, not
+        # independent replications.
+        origin_losses = paired.assign(
+            baseline_loss=paired["baseline_error"] ** 2,
+            corrected_loss=paired["corrected_error"] ** 2,
+        ).groupby("valid_time", as_index=False)[
+            ["baseline_loss", "corrected_loss"]
+        ].mean()
+        baseline_loss = origin_losses["baseline_loss"].to_numpy()
+        corrected_loss = origin_losses["corrected_loss"].to_numpy()
+        mean_diff, lower, upper = block_bootstrap_rmse_difference(
+            baseline_loss, corrected_loss
         )
+        origin_errors = paired.groupby("valid_time", as_index=False).mean(
+            numeric_only=True
+        )
+        baseline_error = origin_errors["baseline_error"].to_numpy()
+        corrected_error = origin_errors["corrected_error"].to_numpy()
+        loss_difference = baseline_error**2 - corrected_error**2
+        dm_stat, dm_p = newey_west_dm(loss_difference, lag=1)
+        sensitivity = {}
+        for lag in (3, 7):
+            stat, p_value = newey_west_dm(loss_difference, lag=lag)
+            sensitivity[f"dm_p_value_lag{lag}"] = p_value
         significance_rows.append(
             {
                 "target": target,
@@ -294,8 +406,10 @@ def validate_protocol(table: pd.DataFrame) -> pd.DataFrame:
                 "rmse_improvement_mean": mean_diff,
                 "rmse_improvement_ci95_low": lower,
                 "rmse_improvement_ci95_high": upper,
+                "bootstrap_block_length": 7,
                 "dm_statistic": dm_stat,
                 "dm_p_value": dm_p,
+                **sensitivity,
             }
         )
     pd.DataFrame(significance_rows).to_csv(
@@ -307,11 +421,17 @@ def validate_protocol(table: pd.DataFrame) -> pd.DataFrame:
 def coverage_report(table: pd.DataFrame) -> pd.DataFrame:
     asos = load_asos()
     stations = asos[["station", "lat", "lon"]].drop_duplicates("station")
-    ascat = read_ascat(
-        ASCAT_ROOT / "01/turkiye_akdeniz_ascat_2021_01.nc"
-    )
-    values = ascat["modulus"].squeeze("altitude", drop=True)
-    station_cells = thiessen_ascat_by_station(ascat, stations)
+    station_cells = []
+    for month in range(1, 5):
+        path = ASCAT_ROOT / f"{month:02d}/turkiye_akdeniz_ascat_2021_{month:02d}.nc"
+        if not path.exists():
+            continue
+        ascat = read_ascat(path)
+        station_cells.append(thiessen_ascat_by_station(ascat, stations))
+        ascat.close()
+    if not station_cells:
+        raise FileNotFoundError("Ocak-Nisan ASCAT dosyaları bulunamadı.")
+    station_cells = pd.concat(station_cells, ignore_index=True)
     report = (
         station_cells.assign(valid=station_cells["ascat_thiessen_wind_speed"].notna())
         .groupby("station", as_index=False)
@@ -325,6 +445,16 @@ def coverage_report(table: pd.DataFrame) -> pd.DataFrame:
     )
     report["table_rows"] = report["station"].map(table["station"].value_counts())
     report.to_csv(OUTPUT_ROOT / "paper_thiessen_coverage.csv", index=False)
+    source_report = (
+        table["ltb_observation_source"]
+        .value_counts(dropna=False)
+        .rename_axis("source")
+        .reset_index(name="rows")
+    )
+    source_report["fraction"] = source_report["rows"] / len(table)
+    source_report.to_csv(
+        OUTPUT_ROOT / "paper_ltb_observation_coverage.csv", index=False
+    )
     return report
 
 
@@ -334,6 +464,23 @@ def main() -> None:
     table.to_csv(OUTPUT_ROOT / "ltb_thiessen_table.csv", index=False)
     summary = validate_protocol(table)
     coverage = coverage_report(table)
+    pd.DataFrame(
+        [
+            {
+                "product": "ASCAT",
+                "operational_latency_verified": False,
+                "status": "not_verified",
+                "reason": (
+                    "Arşiv NetCDF zaman damgaları ürünün operasyonel yayın "
+                    "gecikmesini göstermemektedir."
+                ),
+                "required_evidence": (
+                    "Ürün dokümantasyonu veya gerçek zamanlı erişim loglarında "
+                    "yayın ve erişim zamanlarının karşılaştırılması."
+                ),
+            }
+        ]
+    ).to_csv(OUTPUT_ROOT / "paper_operational_availability.csv", index=False)
     print(summary.to_string(index=False))
     print("\nThiessen coverage:")
     print(coverage.to_string(index=False))

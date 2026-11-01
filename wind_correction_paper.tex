@@ -11,16 +11,16 @@
 \geometry{margin=2.5cm}
 \title{ASCAT Destekli TIGGE Rüzgar Tahminlerinde Thiessen Poligonları ve XGBoost ile Hata Düzeltmesi}
 \author{İlayda}
-\date{Pilot çalışma: Ocak 2021}
+\date{Pilot çalışma: Ocak--Nisan 2021}
 \begin{document}
 \maketitle
 
 \begin{abstract}
-Bu çalışma, 12 saatlik TIGGE 10 m rüzgar tahminlerinin tahmin başlangıç zamanındaki ASCAT gözlemleri kullanılarak düzeltilmesini incelemektedir. ASCAT grid hücreleri, ASOS/LTB istasyonlarına Thiessen poligonlarıyla atanmış ve alan-ağırlıklı istasyon özellikleri XGBoost hata düzeltme modeline verilmiştir. Değerlendirme LTB/ASOS gözlemleri ve ERA5 reanalysis hedefleriyle, zaman sıralamasını koruyan beş katmanlı rolling-origin doğrulama kullanılarak yapılmıştır. Ocak 2021 pilot döneminde RMSE iyileşmesi sırasıyla yüzde 52.07 ve yüzde 50.04 bulunmuştur. LTB hedefinde Diebold--Mariano testi anlamlı iken, ERA5 hedefindeki sonuç daha uzun dönemle doğrulanmalıdır.
+Bu çalışma, 12 saatlik TIGGE 10 m rüzgar tahminlerinin tahmin başlangıç zamanındaki ASCAT gözlemleri kullanılarak düzeltilmesini incelemektedir. ASCAT grid hücreleri, ASOS/LTB istasyonlarına Thiessen poligonlarıyla atanmış ve alan-ağırlıklı istasyon özellikleri hedefe özgü XGBoost hata düzeltme modellerine verilmiştir. Değerlendirme LTB/ASOS gözlemleri ve ERA5 reanaliz hedefleriyle, zaman sıralamasını koruyan 113 günlük expanding-window dış örnek forecast origin kullanılarak Ocak--Nisan 2021 döneminde yapılmıştır. Eşleştirme sonrasında 432 istasyon-zaman kaydı elde edilmiş, gerekli hedef ve özellikleri geçerli olan 428 kayıt nihai dış örnek metriklerine dahil edilmiştir. Tüm dış örnek hataları havuzlandığında ASCAT düzeltmesi RMSE'yi LTB ve ERA5 hedeflerinde sırasıyla yüzde 20.37 ve yüzde 28.54 azaltmıştır. Forecast-origin kümelenmesi dikkate alındığında ERA5 sonucu yüzde 10 düzeyinde anlamlı, LTB sonucu ise anlamlı değildir.
 \end{abstract}
 
 \section{Veri ve yöntem}
-TIGGE tahmini 12:00 başlangıç zamanında alınmış, ASCAT aynı başlangıç zamanında kullanılmış, ERA5 ve LTB doğrulaması 12 saat sonraki geçerlilik zamanında yapılmıştır. LTB rüzgar hızı knot biriminden m/s'ye dönüştürülmüştür. Eksik hız değerleri nedensel Kalman filtresiyle doldurulmuştur.
+TIGGE tahmini 12:00 başlangıç zamanında alınmış, ASCAT aynı başlangıç zamanında kullanılmış, ERA5 ve LTB doğrulaması 12 saat sonraki geçerlilik zamanında yapılmıştır. LTB rüzgar hızı knot biriminden m/s'ye dönüştürülmüştür. Eksik hız değerleri, ileriye dönük çalışan ve başlangıçtaki eksikleri gelecekteki gözlemlerle doldurmayan nedensel Kalman filtresiyle doldurulmuştur.
 
 \subsection{Rüzgar hızı ve hata}
 \begin{equation}
@@ -40,13 +40,18 @@ Her ASCAT hücresi en yakın istasyonun Voronoi/Thiessen hücresine atanmıştı
 \end{equation}
 
 \subsection{Model ve doğrulama}
-Ham TIGGE, sabit bias düzeltmesi, lineer regresyon, Random Forest ve XGBoost karşılaştırılmıştır. Zaman sıralaması korunmuş, beş expanding/rolling test katmanı kullanılmıştır. Tahmin başlangıcı ile geçerlilik zamanı için $t_{init}\le t_{valid}$ koşulu kontrol edilmiştir.
+Ham TIGGE, persistence, sabit bias düzeltmesi, lineer regresyon, Random Forest ve XGBoost karşılaştırılmıştır. LTB ve ERA5 için ayrı hata hedefleri eğitilmiştir; LTB sonuçları artık ERA5 hata hedefinin transferinden elde edilmemektedir. Zaman sıralaması korunmuş, her geçerli gün için expanding-window dış örnek testi yapılmıştır. Tahmin başlangıcı ile geçerlilik zamanı için $t_{init}\le t_{valid}$ koşulu kontrol edilmiştir.
 Her katmanda eğitim kümesi yalnızca test kümesinin ilk geçerlilik zamanından
 önceki kayıtlarla oluşturulmuş ve eğitim/test geçerlilik zamanlarının
 kesişmediği otomatik olarak denetlenmiştir. Ayrıca hedef ve hata değişkenlerinin
 özellik listesine alınmadığı, özelliklerin sonlu olduğu ve ASCAT gözleminin
 geçerlilik zamanından sonra gelmediği kontrol edilmiştir. Bu kontrollerin
-katman-bazlı çıktısı \texttt{paper\_leakage\_audit.csv} dosyasında sunulmuştur.
+katman-bazlı çıktısı \texttt{paper\_leakage\_audit.csv} dosyasında sunulmuştur. XGBoost
+hiperparametreleri her rolling-origin adımında geçmiş eğitim kümesinin son
+yüzde 20'si üzerinde iç zaman doğrulamasıyla seçilmiş, ardından seçilen
+ayarlarla tüm geçmiş eğitim kümesinde yeniden eğitilmiştir. Böylece test
+originleri hiperparametre seçiminden ayrılmıştır; ancak bağımsız yıllar arası
+validation dönemi bulunmamaktadır.
 
 \subsection{İstatistikler}
 \begin{equation}
@@ -56,28 +61,29 @@ MAE=\frac{1}{n}\sum_i|\widehat{U}_i-U_i|
 \begin{equation}
 z_i=\frac{x_i-\bar{x}}{s_x}.
 \end{equation}
-RMSE farkları 2000 tekrarlı paired bootstrap ile yüzde 95 güven aralığında raporlanmış, tahmin hatalarının karesel farkları için lag-1 Newey--West varyanslı Diebold--Mariano t-testi uygulanmıştır. Test istatistiğinin p-değeri, $n-1$ serbestlik dereceli Student t dağılımından iki taraflı olarak hesaplanmıştır.
+RMSE farkları istasyonları aynı forecast origin içinde bir küme kabul eden 2000 tekrarlı, 7 günlük blok paired bootstrap ile yüzde 95 güven aralığında raporlanmış, tahmin hatalarının karesel farkları için lag-1 Newey--West varyanslı Diebold--Mariano asimptotik z-testi uygulanmıştır. İki taraflı p-değeri standart normal dağılımdan hesaplanmıştır. İlk origin eğitim verisi olmadığı için 113 dış örnek origin test edilmiştir. Özet RMSE ve MAE değerleri fold ortalaması değil, tüm dış örnek tahmin hatalarının havuzlanmasıyla hesaplanmıştır.
+Newey--West lag 3 ve 7 duyarlılık p-değerleri de raporlanmıştır; LTB için
+sırasıyla $0.1190$ ve $0.1657$, ERA5 için $0.0013$ ve $0.0017$ bulunmuştur.
 
 \section{Sonuçlar}
-Beş katmanlı expanding rolling-origin doğrulamasında toplam 18 istasyon-zaman
-test örneği değerlendirilmiştir. Veri sızıntısı denetiminin tüm katmanlarda
+Eşleştirme sonrasında 432 istasyon-zaman kaydı oluşturulmuştur. Gerekli hedef
+ve özellik değerleri geçerli olan 428 kayıt, 113 günlük dış örnek origin
+üzerinde expanding rolling-origin doğrulamasında değerlendirilmiştir. Veri
+sızıntısı denetiminin tüm katmanlarda
 başarılı olması, her test katmanının yalnızca geçmiş geçerlilik zamanlarından
-öğrenildiğini göstermiştir. Buna rağmen örneklem Ocak 2021 ile sınırlı
-olduğundan sonuçlar pilot niteliktedir.
+öğrenildiğini göstermiştir. Örneklem Ocak--Nisan 2021 ile sınırlı olduğundan
+sonuçlar pilot niteliktedir.
 
-LTB/ASOS hedefinde ham TIGGE tahmininin RMSE değeri 2.988 m/s iken
-ASCAT--Thiessen--XGBoost düzeltmesiyle 1.432 m/s'ye düşmüştür; bu, 1.498 m/s
-mutlak ve yüzde 52.07 göreli iyileşmeye karşılık gelmektedir. ERA5 hedefinde
-RMSE 2.386 m/s'den 1.192 m/s'ye gerilemiş, iyileşme 1.174 m/s ve yüzde
-50.04 olmuştur. LTB hedefindeki iyileşme paired bootstrap ile elde edilen
-0.793--2.158 m/s yüzde 95 güven aralığı ve DM t-testi ($p=0.0163$) ile
-desteklenmiştir. ERA5 hedefindeki bootstrap aralığı 0.325--1.966 m/s
-olmasına karşın DM t-testi sonucu $p=0.1057$ olduğundan yüzde 5 anlamlılık düzeyine
-ulaşmamıştır; dolayısıyla ERA5 sonucu yüzde 10 düzeyinde de istatistiksel
-olarak anlamlı değildir. LTB sonucu ise hem yüzde 5 hem yüzde 10 düzeyinde
-anlamlıdır. Dolayısıyla düzeltme her iki hedefte de hata büyüklüğünü
-azaltmış, ancak ERA5 için istatistiksel kanıt pilot örneklemin sınırları
-içinde kesinleşmemiştir.
+LTB/ASOS hedefinde ham TIGGE tahmininin havuzlanmış RMSE değeri 1.863 m/s iken
+ASCAT--Thiessen--XGBoost düzeltmesiyle 1.483 m/s'ye düşmüştür; bu, 0.380 m/s
+mutlak ve yüzde 20.37 göreli iyileşmeye karşılık gelmektedir. ERA5 hedefinde
+RMSE 1.439 m/s'den 1.029 m/s'ye gerilemiş, iyileşme 0.411 m/s ve yüzde
+28.54 olmuştur. İstasyonları aynı forecast origin içinde bağımsız saymayan
+113 forecast-origin kümeli hesaplamada LTB için 7 günlük blok bootstrap aralığı
+$0.258$--$0.548$ m/s ve DM z-testi $p=0.1060$, ERA5 için aralık
+$0.338$--$0.599$ m/s ve $p=0.0025$ bulunmuştur. Yalnızca ERA5 hedefinde
+iyileşme yüzde 10 düzeyinde anlamlıdır. Sonuçlar daha uzun dönem ve bağımsız bir
+doğrulama dönemiyle desteklenmelidir.
 
 \begin{table}[H]\centering
 \caption{Rolling-origin doğrulama sonuçları.}\label{tab:metrics}
@@ -85,10 +91,10 @@ içinde kesinleşmemiştir.
 \toprule
 Hedef & Model & MAE & RMSE & $R^2$ & Örnek\\
 \midrule
-LTB & TIGGE & 2.645 & 2.988 & -103.187 & 18\\
-LTB & ASCAT+XGBoost & 1.247 & 1.432 & -16.343 & 18\\
-ERA5 & TIGGE & 2.032 & 2.386 & -17.259 & 18\\
-ERA5 & ASCAT+XGBoost & 0.978 & 1.192 & -3.290 & 18\\
+LTB & TIGGE & 1.405 & 1.863 & 0.243 & 428\\
+LTB & ASCAT+XGBoost & 1.052 & 1.483 & 0.520 & 428\\
+ERA5 & TIGGE & 1.056 & 1.439 & 0.363 & 428\\
+ERA5 & ASCAT+XGBoost & 0.746 & 1.029 & 0.674 & 428\\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -113,5 +119,18 @@ ERA5 & ASCAT+XGBoost & 0.978 & 1.192 & -3.290 & 18\\
 \begin{figure}[H]\centering\includegraphics[width=.98\linewidth]{wind_correction_output/figures/ltb_forecast_scatter.png}\caption{Gerçekleşen LTB rüzgarına karşı TIGGE, ASCAT--XGBoost ve ERA5 değerlerinin noktasal saçılımı. Kesikli çizgi 1:1 uyumu gösterir.}\end{figure}
 
 \section{Sınırlılıklar}
-Bu sonuçlar Ocak 2021 döneminde 18 bağımsız test örneğine dayanan pilot bulgulardır. LTB hedefinde DM t-testi $p=0.0163$, ERA5 hedefinde $p=0.1057$ bulunmuştur. ERA5 sonucu klasik yüzde 5 seviyesinde anlamlı değildir. Mevsimsel ve yıllararası genelleme için daha uzun TIGGE dönemleri gereklidir. LTBH istasyonunda geçerli Thiessen ASCAT değeri bulunmadığı için bu istasyon model tablosuna dahil edilmemiştir.
+Bu sonuçlar Ocak--Nisan 2021 döneminde eşleştirilmiş 432 kaydın 428 nihai
+istasyon-zaman dış örnek kaydı ve 113 forecast origin kümesi üzerinden elde
+edilen pilot bulgulardır. LTB hedefinde
+DM z-testi $p=0.1060$, ERA5 hedefinde $p=0.0025$ bulunmuştur; yalnızca ERA5
+sonucu yüzde 10 düzeyinde anlamlıdır. Bununla birlikte dönem tek yılla sınırlıdır ve
+ASCAT ürününün gerçek zamanlı yayın
+gecikmesi bu arşiv verilerinden doğrulanamadığından, sonuçlar operasyonel
+erişilebilirlik kanıtı olarak yorumlanmamalıdır. Mevsimsel ve yıllararası
+genelleme için daha uzun TIGGE dönemleri gereklidir. Eşleşmiş 432 satırın
+tamamında LTB/ASOS gözlemi bulunduğu için bu çalışmanın sayısal sonuçlarında
+ERA5 fallback kullanılmamıştır. Fallback yolu kodda açıkça işaretlenmiştir;
+LTBH istasyonunda geçerli Thiessen ASCAT değeri bulunmadığı için bu istasyon
+model tablosuna dahil edilmemiştir. Persistence baseline'ı da ek olarak
+raporlanmış, istasyon-eşitlikli metrikler ayrı dosyada verilmiştir.
 \end{document}
