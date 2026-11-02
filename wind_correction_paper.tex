@@ -20,7 +20,12 @@ Bu çalışma, 12 saatlik TIGGE 10 m rüzgar tahminlerinin tahmin başlangıç z
 \end{abstract}
 
 \section{Veri ve yöntem}
-TIGGE tahmini 12:00 başlangıç zamanında alınmış, ASCAT aynı başlangıç zamanında kullanılmış, ERA5 ve LTB doğrulaması 12 saat sonraki geçerlilik zamanında yapılmıştır. LTB rüzgar hızı knot biriminden m/s'ye dönüştürülmüştür. Eksik hız değerleri, ileriye dönük çalışan ve başlangıçtaki eksikleri gelecekteki gözlemlerle doldurmayan nedensel Kalman filtresiyle doldurulmuştur.
+TIGGE tahmini 12:00 UTC başlangıç zamanında alınmış, ERA5 ve LTB doğrulaması 12 saat sonraki geçerlilik zamanında (ertesi gün 00:00 UTC) yapılmıştır. LTB rüzgar hızı knot biriminden m/s'ye dönüştürülmüştür.
+
+Kullanılan ASCAT ürünü (NOAA CoastWatch ERDDAP, \texttt{erdQMwind1day}) tüm MetOp uydularının 0.25$^\circ$ çözünürlüklü, 1 günlük kompozit ortalamasıdır; zaman damgası günün merkezi olan 12:00 UTC'dir ve tek bir geçişin ölçüm anını göstermez. MetOp uyduları güneşe eşzamanlı yörüngede olup çalışma bölgesinden yaklaşık olarak sabah (alçalan) ve akşam (yükselen) geçişlerinde gözlem yapar. % TODO: geçiş saatlerini ürün dokümantasyonundan kaynakla birlikte yazın.
+Bu nedenle $D$ gününün kompoziti, $D$ günü 12:00 UTC başlangıç zamanından sonraki geçişleri de içerebilir. Veri sızıntısını önlemek için her başlangıç zamanında yalnızca bir önceki günün ($D-1$) kompoziti kullanılmış ve kompozitin bitişinin başlangıç zamanından önce olduğu otomatik olarak denetlenmiştir. ASCAT yalnızca deniz yüzeyinde ölçüm yaptığından istasyon değerleri, istasyonun Thiessen hücresindeki deniz pikselleri üzerinden hesaplanmıştır.
+
+LTB/ASOS kayıtlarında yalnızca eksik rüzgar hızı değerleri, ileriye dönük çalışan nedensel bir yerel-seviye Kalman filtresiyle doldurulmuştur; gözlenen değerler değiştirilmemiştir. Geçerlilik zamanının $\pm$40 dakikası içinde gerçek gözlem varsa doldurulmuş değer yerine bu gözlem kullanılmış, doldurulmuş değer kullanılan kayıtlar ayrıca işaretlenmiştir (\texttt{paper\_sample\_composition.csv}).
 
 \subsection{Rüzgar hızı ve hata}
 \begin{equation}
@@ -40,7 +45,7 @@ Her ASCAT hücresi en yakın istasyonun Voronoi/Thiessen hücresine atanmıştı
 \end{equation}
 
 \subsection{Model ve doğrulama}
-Ham TIGGE, persistence, sabit bias düzeltmesi, lineer regresyon, Random Forest ve XGBoost karşılaştırılmıştır. LTB ve ERA5 için ayrı hata hedefleri eğitilmiştir; LTB sonuçları artık ERA5 hata hedefinin transferinden elde edilmemektedir. Zaman sıralaması korunmuş, her geçerli gün için expanding-window dış örnek testi yapılmıştır. Tahmin başlangıcı ile geçerlilik zamanı için $t_{init}\le t_{valid}$ koşulu kontrol edilmiştir.
+Ham TIGGE, persistence, sabit bias düzeltmesi, lineer regresyon, Random Forest ve XGBoost karşılaştırılmıştır. Persistence tahmini her hedef için kendi kaynağından, tahmin başlangıç anında (geçerlilik zamanından 12 saat önce) türetilmiştir: LTB hedefi için istasyonun 12:00 UTC gözlemi, ERA5 hedefi için ERA5'in 12:00 UTC değeri kullanılmıştır. Başlangıç gözlemi bulunmayan kayıtlarda persistence değeri TIGGE tahminiyle doldurulmuş ve bu kayıtların sayısı raporlanmıştır. Geçerlilik zamanı 00:00 UTC olduğundan 12:00 UTC değeri günlük döngünün farklı bir evresine aittir; bu yüzden ayrıca 24 saatlik persistence (bir önceki günün 00:00 UTC değeri, yine hedefin kendi kaynağından) raporlanmıştır. Bu değer de tahmin başlangıcından önce bilinir ve günlük döngüyü koruduğu için gece rüzgarında güçlü bir referanstır. LTB ve ERA5 için ayrı hata hedefleri eğitilmiştir; LTB sonuçları artık ERA5 hata hedefinin transferinden elde edilmemektedir. Zaman sıralaması korunmuş, her geçerli gün için expanding-window dış örnek testi yapılmıştır. Tahmin başlangıcı ile geçerlilik zamanı için $t_{init}\le t_{valid}$ koşulu kontrol edilmiştir.
 Her katmanda eğitim kümesi yalnızca test kümesinin ilk geçerlilik zamanından
 önceki kayıtlarla oluşturulmuş ve eğitim/test geçerlilik zamanlarının
 kesişmediği otomatik olarak denetlenmiştir. Ayrıca hedef ve hata değişkenlerinin
@@ -58,17 +63,34 @@ validation dönemi bulunmamaktadır.
 RMSE=\sqrt{\frac{1}{n}\sum_i(\widehat{U}_i-U_i)^2},\quad
 MAE=\frac{1}{n}\sum_i|\widehat{U}_i-U_i|
 \end{equation}
-\begin{equation}
-z_i=\frac{x_i-\bar{x}}{s_x}.
-\end{equation}
-RMSE farkları istasyonları aynı forecast origin içinde bir küme kabul eden 2000 tekrarlı, 7 günlük blok paired bootstrap ile yüzde 95 güven aralığında raporlanmış, tahmin hatalarının karesel farkları için lag-1 Newey--West varyanslı Diebold--Mariano asimptotik z-testi uygulanmıştır. İki taraflı p-değeri standart normal dağılımdan hesaplanmıştır. İlk origin eğitim verisi olmadığı için 113 dış örnek origin test edilmiştir. Özet RMSE ve MAE değerleri fold ortalaması değil, tüm dış örnek tahmin hatalarının havuzlanmasıyla hesaplanmıştır.
+RMSE farkları istasyonları aynı forecast origin içinde bir küme kabul eden 2000 tekrarlı, 7 günlük blok paired bootstrap ile yüzde 95 güven aralığında raporlanmıştır. Diebold--Mariano testi için kayıp, bootstrap ile aynı şekilde tanımlanmıştır: her origin $t$ için $d_t = \overline{e^2_{t,\mathrm{TIGGE}}} - \overline{e^2_{t,\mathrm{düz}}}$, yani origin içindeki istasyonların karesel hatalarının ortalamaları farkıdır. Bu seriye lag-1 Newey--West varyanslı asimptotik z-testi uygulanmıştır. (Çalışmanın önceki sürümünde DM kaybı, istasyon hataları önce ortalanıp sonra karesi alınarak hesaplanmıştı; bu durumda zıt işaretli istasyon hataları birbirini götürdüğünden test bootstrap ile farklı bir büyüklüğü sınıyordu. Bootstrap aralığının sıfırı dışlayıp DM testinin anlamsız çıkmasının nedeni bu tutarsızlıktır.)
+
+Nokta tahmini olarak tüm dış örnek kayıtları havuzlanarak hesaplanan RMSE farkı ($\mathrm{RMSE}_{\mathrm{TIGGE}}-\mathrm{RMSE}_{\mathrm{düz}}$, Tablo~\ref{tab:metrics}) raporlanmıştır. Bootstrap ise origin-düzeyi MSE'leri yeniden örneklediği için her origini eşit ağırlıklandırır; bu nedenle bootstrap dağılımının ortalaması havuzlanmış farktan bir miktar farklıdır ve yalnızca güven aralığı için kullanılmıştır. İki taraflı p-değeri standart normal dağılımdan hesaplanmıştır. İlk origin eğitim verisi olmadığı için 113 dış örnek origin test edilmiştir. Özet RMSE ve MAE değerleri fold ortalaması değil, tüm dış örnek tahmin hatalarının havuzlanmasıyla hesaplanmıştır.
 Newey--West lag 3 ve 7 duyarlılık p-değerleri de raporlanmıştır; LTB için
 sırasıyla $0.1190$ ve $0.1657$, ERA5 için $0.0013$ ve $0.0017$ bulunmuştur.
 
 \section{Sonuçlar}
-Eşleştirme sonrasında 432 istasyon-zaman kaydı oluşturulmuştur. Gerekli hedef
-ve özellik değerleri geçerli olan 428 kayıt, 113 günlük dış örnek origin
-üzerinde expanding rolling-origin doğrulamasında değerlendirilmiştir. Veri
+% TODO: Bu bölümdeki ve tablodaki tüm sayılar, kod düzeltmelerinden
+% (Kalman, ASCAT D-1 kompoziti, persistence, DM kaybı) ÖNCEKİ çalıştırmaya
+% aittir. evaluate_ltb_thiessen.py ve paper_validation_protocol.py yeniden
+% çalıştırıldıktan sonra paper_*.csv dosyalarından güncellenmelidir.
+Eşleştirme sonrasında 432 istasyon-zaman kaydı oluşturulmuştur. İlk geçerlilik
+zamanındaki 4 kayıt yalnızca eğitim için kullanılabildiğinden (öncesinde eğitim
+verisi yoktur), kalan 428 kayıt 113 günlük dış örnek origin üzerinde expanding
+rolling-origin doğrulamasında değerlendirilmiştir.
+
+Örneklem küçük ve istasyonlar arasında dengesizdir. Her origin'de ortalama 3.8
+istasyon bulunmaktadır (çoğunlukla 4). Kayıtların büyük kısmı LTBS ve LTBU
+(her biri 114), LTFE (100) ve LTFD (91) istasyonlarından gelmektedir. LTBG'den
+11, LTFK'den yalnızca 2 kayıt vardır. LTBH'nin Thiessen hücresinde hiç geçerli
+ASCAT değeri yoktur; LTFA'da ASCAT değeri bulunmasına rağmen geçerlilik zamanına
+$\pm$40 dakika içinde LTB gözlemi eşleşmediği için kayıt oluşmamıştır.
+% TODO: LTFA, LTBG ve LTFK'de kaydın neden az olduğunu asos.csv'de kontrol edin
+% (gözlem saatleri / eksik sknt). Ayrıntılar
+\texttt{paper\_sample\_composition.csv} ve \texttt{paper\_stations\_per\_origin.csv}
+dosyalarındadır. Bu nedenle havuzlanmış metrikler büyük ölçüde dört istasyonu
+yansıtır ve istasyon-eşitlikli metriklerde LTBG ile LTFK'nin RMSE'leri çok az
+örneğe dayandığından gürültülüdür. Veri
 sızıntısı denetiminin tüm katmanlarda
 başarılı olması, her test katmanının yalnızca geçmiş geçerlilik zamanlarından
 öğrenildiğini göstermiştir. Örneklem Ocak--Nisan 2021 ile sınırlı olduğundan

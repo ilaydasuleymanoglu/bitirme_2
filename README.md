@@ -21,8 +21,16 @@ Analiz Ocak--Nisan 2021 dönemindeki dört aylık aylık GRIB dosyalarını kull
 - gerekli hedef ve özellikleri sonlu olan 428 nihai dış örnek test kaydı.
 
 Buradaki 432 kayıt, TIGGE--ASCAT--LTB/ASOS eşleştirmesinden sonra oluşan ham
-analiz tablosudur. Dört kayıt, rolling-origin tahmini için gerekli tüm hedef
-ve özellik değerleri geçerli olmadığından nihai model metriklerine alınmamıştır.
+analiz tablosudur. Dışarıda kalan 4 kayıt ilk geçerlilik zamanına
+(2021-01-04) aittir: öncesinde eğitim verisi olmadığı için yalnızca eğitimde
+kullanılır, dış örnek test edilmez.
+
+> **Not (düzeltme sonrası):** Bu README'deki sayılar Kalman, ASCAT (D-1
+> kompozit), persistence ve DM kaybı düzeltmelerinden önceki çalıştırmaya
+> aittir. `evaluate_ltb_thiessen.py` ve `paper_validation_protocol.py`
+> yeniden çalıştırıldıktan sonra güncellenmelidir. Eski grid pilotunun
+> çıktıları (`metrics.csv` vb.) `wind_correction_output/legacy_grid_pilot/`
+> klasörüne taşınmıştır ve tez sonuçlarında kullanılmaz.
 Bu nedenle sonuç tablolarındaki örnek sayısı 428'dir; 432 ve 428 farklı işlem
 aşamalarını ifade eder ve aynı örneklem büyüklüğü olarak yorumlanmamalıdır.
 

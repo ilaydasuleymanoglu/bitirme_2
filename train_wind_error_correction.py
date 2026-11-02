@@ -11,7 +11,8 @@ ROOT = Path(__file__).resolve().parent
 TIGGE_ROOT = ROOT / "ERA5_data"
 ASCAT_ROOT = ROOT / "ascat_data"
 REANALYSIS_ROOT = ROOT / "ERA_5_REANALYSİS_Data"
-OUTPUT_ROOT = ROOT / "wind_correction_output"
+# Legacy grid pilot; not used for the thesis results.
+OUTPUT_ROOT = ROOT / "wind_correction_output" / "legacy_grid_pilot"
 
 
 def open_grib_datasets(path: Path) -> list[xr.Dataset]:

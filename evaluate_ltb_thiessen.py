@@ -15,11 +15,20 @@ REANALYSIS_ROOT = ROOT / "ERA_5_REANALYSİS_Data"
 ASOS_PATH = ROOT / "asos.csv"
 OUTPUT_ROOT = ROOT / "wind_correction_output"
 KNOT_TO_MS = 0.514444
+# erdQMwind1day is a 1-day composite whose timestamp is the day centre
+# (12:00 UTC); it contains passes after the 12:00 forecast start. Using the
+# previous day's composite keeps every ASCAT pass before initialization.
+ASCAT_LAG_DAYS = 1
+ASCAT_COMPOSITE_HALF_WIDTH = pd.Timedelta("12h")
 
 
 def kalman_fill(values: pd.Series, process_var: float = 0.05,
                 observation_var: float = 1.0) -> pd.Series:
-    """Causal local-level Kalman filter; leading gaps remain missing."""
+    """Fill gaps with a causal local-level Kalman filter.
+
+    Observed values are returned unchanged; only missing values receive the
+    filtered state. Leading gaps remain missing.
+    """
     measurements = values.to_numpy(dtype=float)
     filled = np.empty(len(measurements), dtype=float)
     finite = np.isfinite(measurements)
@@ -38,7 +47,9 @@ def kalman_fill(values: pd.Series, process_var: float = 0.05,
             gain = variance / (variance + observation_var)
             state += gain * (measurement - state)
             variance *= 1.0 - gain
-        filled[index] = state
+            filled[index] = measurement
+        else:
+            filled[index] = state
     return pd.Series(filled, index=values.index, name=values.name)
 
 
@@ -92,6 +103,7 @@ def load_asos() -> pd.DataFrame:
     asos["sknt_kalman"] = asos.groupby("station", group_keys=False)["sknt"].apply(
         kalman_fill
     )
+    asos["sknt_gap_filled"] = asos["sknt"].isna() & asos["sknt_kalman"].notna()
     stations = (
         asos[["station", "lat", "lon"]]
         .drop_duplicates("station")
@@ -130,7 +142,7 @@ def thiessen_ascat_by_station(
                 value = np.average(flat_values[valid], weights=cell_weights[valid])
             rows.append(
                 {
-                    "initialization_time": timestamp,
+                    "ascat_time": timestamp,
                     "station": station["station"],
                     "ascat_thiessen_wind_speed": value,
                 }
@@ -147,6 +159,8 @@ def station_model_features(
     station_rows = []
     initialization_time = tigge["initialization_time"].iloc[0]
     valid_time = tigge["valid_time"].iloc[0]
+    ascat_time = initialization_time - pd.Timedelta(days=ASCAT_LAG_DAYS)
+    reanalysis_times = set(pd.to_datetime(reanalysis["time"].values))
     for _, station in stations.iterrows():
         lat = xr.DataArray([station["lat"]], dims="point")
         lon = xr.DataArray([station["lon"]], dims="point")
@@ -164,15 +178,32 @@ def station_model_features(
         )
         point["era5_u10"] = float(era["u10"].squeeze().values)
         point["era5_v10"] = float(era["v10"].squeeze().values)
+        # Persistence for the ERA5 target: ERA5 wind at forecast start.
+        if initialization_time in reanalysis_times:
+            era_init = reanalysis.sel(
+                time=initialization_time,
+                latitude=lat,
+                longitude=lon,
+                method="nearest",
+            )
+            point["era5_persistence_wind_speed"] = float(
+                np.hypot(era_init["u10"].squeeze(), era_init["v10"].squeeze())
+            )
+        else:
+            point["era5_persistence_wind_speed"] = np.nan
         point["station"] = station["station"]
         valid_minutes = valid_time.hour * 60 + valid_time.minute
         point["fourier_daily_sin"] = np.sin(2 * np.pi * valid_minutes / 1440)
         point["fourier_daily_cos"] = np.cos(2 * np.pi * valid_minutes / 1440)
-        point["ascat_thiessen_wind_speed"] = ascat_station.loc[
+        point["ascat_time"] = ascat_time
+        ascat_value = ascat_station.loc[
             ascat_station["station"].eq(station["station"])
-            & ascat_station["initialization_time"].eq(initialization_time),
+            & ascat_station["ascat_time"].eq(ascat_time),
             "ascat_thiessen_wind_speed",
-        ].iloc[0]
+        ]
+        point["ascat_thiessen_wind_speed"] = (
+            ascat_value.iloc[0] if len(ascat_value) else np.nan
+        )
         station_rows.append(point)
     return pd.DataFrame(station_rows)
 
@@ -184,15 +215,18 @@ def match_ltb_observations(
         time_difference=(asos["valid"] - valid_time).abs()
     )
     candidates = candidates[candidates["time_difference"] <= pd.Timedelta("40min")]
+    columns = ["station", "ltb_wind_speed", "ltb_gap_filled"]
     if candidates.empty:
-        return pd.DataFrame(columns=["station", "ltb_wind_speed"])
+        return pd.DataFrame(columns=columns)
+    # Prefer a real observation over a Kalman-filled gap inside the window.
     matched = (
-        candidates.sort_values("time_difference")
+        candidates.sort_values(["sknt_gap_filled", "time_difference"])
         .drop_duplicates("station")
         .copy()
     )
     matched["ltb_wind_speed"] = matched["sknt_kalman"] * KNOT_TO_MS
-    return matched[["station", "ltb_wind_speed"]]
+    matched["ltb_gap_filled"] = matched["sknt_gap_filled"]
+    return matched[columns]
 
 
 def build_station_table() -> pd.DataFrame:
@@ -207,24 +241,34 @@ def build_station_table() -> pd.DataFrame:
         TIGGE_ROOT.glob("*/turkiye_akdeniz_era5_2021_*.grib")
     )
     input_paths = monthly_paths or daily_paths
+    # All months are read first so that the lagged ASCAT composite of the
+    # first day of a month can come from the previous month's file.
+    ascat_station = []
+    for ascat_path in sorted(ASCAT_ROOT.glob("*/turkiye_akdeniz_ascat_2021_*.nc")):
+        ascat = read_ascat(ascat_path)
+        ascat_station.append(thiessen_ascat_by_station(ascat, stations))
+        ascat.close()
+    if not ascat_station:
+        raise FileNotFoundError("ASCAT dosyaları bulunamadı.")
+    ascat_station = pd.concat(ascat_station, ignore_index=True)
+    ascat_times = set(ascat_station["ascat_time"])
+
     for path in input_paths:
         month = path.stem[-2:] if monthly_paths else path.parent.name
-        ascat_path = ASCAT_ROOT / month / f"turkiye_akdeniz_ascat_2021_{month}.nc"
         reanalysis_path = next(
             REANALYSIS_ROOT.glob(
                 f"**/*era5_reanalysis_2021_{month}.grib"
             ),
             None,
         )
-        if not ascat_path.exists() or reanalysis_path is None:
+        if reanalysis_path is None:
             continue
-        ascat = read_ascat(ascat_path)
         reanalysis = read_wind_reanalysis(reanalysis_path)
-        ascat_station = thiessen_ascat_by_station(ascat, stations)
         tigge_all = read_tigge_file(path)
         for _, tigge in tigge_all.groupby("initialization_time"):
             initialization_time = tigge["initialization_time"].iloc[0]
-            if initialization_time not in set(pd.to_datetime(ascat["time"].values)):
+            ascat_time = initialization_time - pd.Timedelta(days=ASCAT_LAG_DAYS)
+            if ascat_time not in ascat_times:
                 continue
             valid_time = pd.Timestamp(tigge["valid_time"].iloc[0])
             if valid_time.to_datetime64() not in reanalysis["time"].values:
@@ -235,9 +279,21 @@ def build_station_table() -> pd.DataFrame:
             valid_time = station_features["valid_time"].iloc[0]
             observations = match_ltb_observations(asos, valid_time)
             station_features = station_features.merge(
-                observations[["station", "ltb_wind_speed"]],
+                observations,
                 on="station",
                 how="left",
+            )
+            # Persistence for the LTB target: LTB observation at forecast start.
+            start_observations = match_ltb_observations(
+                asos, initialization_time
+            ).rename(
+                columns={
+                    "ltb_wind_speed": "ltb_persistence_wind_speed",
+                    "ltb_gap_filled": "ltb_persistence_gap_filled",
+                }
+            )
+            station_features = station_features.merge(
+                start_observations, on="station", how="left"
             )
             station_features["ltb_observation_source"] = np.where(
                 station_features["ltb_wind_speed"].notna(),
@@ -256,11 +312,11 @@ def build_station_table() -> pd.DataFrame:
                 )
             )
             rows.append(station_features)
-        ascat.close()
 
     if not rows:
         raise RuntimeError("ASCAT başlangıç zamanı ile eşleşen TIGGE çevrimi bulunamadı.")
     table = pd.concat(rows, ignore_index=True)
+    table["ltb_gap_filled"] = table["ltb_gap_filled"].fillna(False).astype(bool)
     table["tigge_wind_speed"] = np.hypot(table["tigge_u10"], table["tigge_v10"])
     table["era5_wind_speed"] = np.hypot(table["era5_u10"], table["era5_v10"])
     table["ltb_error"] = table["ltb_wind_speed"] - table["tigge_wind_speed"]
@@ -269,7 +325,22 @@ def build_station_table() -> pd.DataFrame:
     )
     table["era5_error"] = table["era5_wind_speed"] - table["tigge_wind_speed"]
     table["error"] = table["era5_error"]
-    return table.replace([np.inf, -np.inf], np.nan).dropna()
+    table = table.replace([np.inf, -np.inf], np.nan)
+    # Persistence columns are baselines, not model inputs; a missing start
+    # observation must not remove the row from the evaluation.
+    persistence_columns = [
+        "ltb_persistence_wind_speed",
+        "ltb_persistence_gap_filled",
+        "era5_persistence_wind_speed",
+    ]
+    table = table.dropna(
+        subset=[column for column in table.columns if column not in persistence_columns]
+    ).copy()
+    for target in ["ltb", "era5"]:
+        column = f"{target}_persistence_wind_speed"
+        table[f"{target}_persistence_missing"] = table[column].isna()
+        table[column] = table[column].fillna(table["tigge_wind_speed"])
+    return table.reset_index(drop=True)
 
 
 def metrics(name: str, actual: pd.Series, predicted: np.ndarray) -> dict:

@@ -229,7 +229,8 @@ def save_figures() -> list[Path]:
     paths = []
     labels = {
         "TIGGE": "TIGGE",
-        "Persistence": "Persistence",
+        "Persistence": "Persistence (12:00 UTC)",
+        "Persistence (24 h)": "Persistence (24 h)",
         "TIGGE bias correction": "Bias correction",
         "TIGGE + linear regression": "Linear regression",
         "TIGGE + random forest": "Random forest",
@@ -256,9 +257,13 @@ def save_figures() -> list[Path]:
     paths.append(path)
 
     fig, ax = plt.subplots(figsize=(8, 5), constrained_layout=True)
-    data = significance.copy()
+    data = significance[
+        significance["baseline_model"].eq("TIGGE")
+        & significance["corrected_model"].eq("TIGGE + ASCAT Thiessen XGBoost")
+    ].copy()
     x = np.arange(len(data))
-    improvement = data.rmse_improvement_mean.to_numpy()
+    # Point estimate on the full sample; the CI comes from the bootstrap.
+    improvement = data.rmse_improvement_origin_point.to_numpy()
     lower = improvement - data.rmse_improvement_ci95_low.to_numpy()
     upper = data.rmse_improvement_ci95_high.to_numpy() - improvement
     labels_sig = ["LTB/ASOS", "ERA5"]
@@ -365,7 +370,6 @@ def make_pdf(paths: list[Path]) -> None:
         ax.text(0.02, 0.24, r"$e_t = U^{ERA5}_t - U^{TIGGE}_t$", fontsize=13)
         ax.text(0.02, 0.19, r"$\hat{U}^{corr}_t = U^{TIGGE}_t + \hat{e}_t(X_t)$", fontsize=13)
         ax.text(0.02, 0.14, r"$RMSE = \sqrt{\frac{1}{n}\sum_{i=1}^{n}(\hat{U}_i-U_i)^2}$", fontsize=13)
-        ax.text(0.02, 0.09, r"$z_i=(x_i-\bar{x})/s_x$", fontsize=13)
         pdf.savefig(fig); plt.close(fig)
     print(pdf_path)
 
